@@ -1,0 +1,27 @@
+{
+  "generation_date": "2025-07-10T11:01:20.496019",
+  "total_fatture": 8,
+  "total_transazioni": 14,
+  "total_matches": 14,
+  "scenarios": {
+    "perfect_1_1": 5,
+    "installments_1_n": 3
+  },
+  "config": {
+    "scenarios": {
+      "perfect_1_1": 5,
+      "installments_1_n": 3
+    },
+    "quality_distribution": {
+      "perfect": 0.4,
+      "fuzzy": 0.5,
+      "noisy": 0.1
+    },
+    "timing_distribution": {
+      "standard": 0.6,
+      "delayed": 0.2,
+      "early": 0.1,
+      "same_day": 0.1
+    }
+  }
+}

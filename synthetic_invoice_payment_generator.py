@@ -16,6 +16,8 @@ from langchain.prompts import ChatPromptTemplate
 from data_model import Fattura, Transazione
 from dataclasses import dataclass, asdict
 from dotenv import load_dotenv
+from utils import check_write_permission
+from csv_to_xlsx import csv_to_xlsx_sheets
 
 
 class EnvironmentConfigError(Exception):
@@ -73,37 +75,34 @@ class AITextGenerator:
         )
         self.llm_fattura = self.llm.with_structured_output(Fattura)
         self.llm_trans = self.llm.with_structured_output(Transazione)
-        
-    def generate_causale(self, prestatore: str, numero_fattura: str, importo: float, 
-                        scenario_type: str, quality_level: QualityLevel) -> str:
-        """Generate realistic payment causale"""
-        prompt_template = ChatPromptTemplate.from_messages([
-            ("system", "Genera una stringa di testo che emuli realisticamente il dettaglio, la causale e la controparte di una transazione con i seguenti attributi:"),
-            ("human", "{attributi_transazione}")
-            ])
-
-        attributi_transazione = f"""
-        - id: {uuid4()}
-        - Importo: €{importo:.2f}
-        - Scenario: {scenario_type}
-        """
-        chain = prompt_template | self.llm_trans
-        try:
-            response : Transazione = chain.invoke({"attributi_transazione": attributi_transazione})
-            return response.causale
-        except Exception as e:
-            logger.error(f"Error generating causale: {e}")
-            return f"Pagamento fattura {numero_fattura} - {prestatore}"
     
-    def generate_invoice_data(self, settore: str, prestatore: str, 
+    def generate_invoice_data(self, data_emissione: str, settore: str, prestatore: str, 
                              importo: float, tipo_servizio: str) -> Tuple[str, str]:
         """Generate realistic invoice description and committente"""
         prompt_template = ChatPromptTemplate.from_messages([
-            ("system", "Genera una fattura realistica emessa in Italia con descrizione dettagliata e committente appropriato per questi attributi:"),
-            ("human", "{attributi_fattura}")
-            ])
+        ("system", """Genera una fattura italiana realistica. 
+        
+        IMPORTANTE per la DESCRIZIONE:
+        - Usa un linguaggio tecnico e burocratico tipico delle fatture italiane
+        - Sii conciso ma specifico (max 2-3 righe)
+        - Includi dettagli tecnici specifici del settore
+        - Usa abbreviazioni comuni: "N.", "Rif.", "Cod.", "Art.", "Prot."
+        - Includi riferimenti a normative quando appropriato
+        - Usa terminologia settoriale specifica
+        - Evita descrizioni generiche o marketing
+        - Eventuali date menzionate devono essere coerenti con la data di emissione della fattura
+        - Il tipo di servizio/prodotto menzionato nella descrizione dev'essere coerente con l'importo della fattura
+        
+        COMMITTENTE:
+        - Genera un nome aziendale italiano realistico
+        - Varia tra SRL, SPA, SNCS, SAS, Ditta individuale
+        - Il nome dell'azienda dev'essere coerente con il servizio/prodotto menzionato nella descrizione (e.g. una consulenza legale potrebbe essere offerta da uno studio legale)
+        """),
+        ("human", "Attributi fattura:\n{attributi_fattura}")
+        ])
         attributi_fattura = f"""
         - id: {uuid4()}
+        - Data emissione: {data_emissione}
         - Settore: {settore}
         - Prestatore: {prestatore}
         - Importo: €{importo:.2f}
@@ -111,33 +110,93 @@ class AITextGenerator:
         """
         chain = prompt_template | self.llm_fattura
         try:
-            response : Fattura = chain.invoke({"attributi_fattura": attributi_fattura})
-            return response.descrizione, response.committente
+            response: Fattura = chain.invoke({"attributi_fattura": attributi_fattura})
+            return response.descrizione, response.committente, response.numero_fattura
         except Exception as e:
             logger.error(f"Error generating invoice data: {e}")
-            return f"Servizi {tipo_servizio} per {prestatore}", "AESON SRL"
+            # More realistic fallback descriptions based on service type
+            fallback_descriptions = {
+                "trasporto": "Servizi trasporto merci c/terzi - Rif. DDT N. 125/2024",
+                "consulting": "Attività consulenza specialistica - Prot. N. 456/2024",
+                "formazione": "Corso formazione sicurezza D.Lgs 81/08 - N. 12 ore",
+                "manutenzione": "Intervento manutenzione ordinaria impianti",
+                "pulizia": "Servizi pulizia locali - Periodo 01/07-31/07/2024"
+            }
+            fallback_desc = fallback_descriptions.get(
+                tipo_servizio.lower(), 
+                f"Prestazione {tipo_servizio} - Rif. contratto"
+            )
+            # Generate a fallback numero_fattura
+            fallback_numero = f"FT{data_emissione.year}/{random.randint(1000, 9999)}"
+            return fallback_desc, "BETA SOLUTIONS SRL", fallback_numero
 
-    def generate_transaction_data(self, prestatore: str, importo: float, numero_fattura: str) -> Tuple[str, str, str]:
+    def generate_transaction_data(self, fattura: Fattura, importo: float, 
+                                invoice_number_probability: float = 0.1) -> Tuple[str, str, str, bool]:
         """Generate realistic transaction dettaglio, causale and controparte"""
-        prompt_template = ChatPromptTemplate.from_messages([
-            ("system", "Genera una transazione bancaria italiana realistica con dettaglio, causale e controparte per questi attributi:"),
-            ("human", "{attributi_transazione}")
+        include_invoice_number = random.random() < invoice_number_probability
+        
+        if include_invoice_number:
+            prompt_template = ChatPromptTemplate.from_messages([
+                ("system", """Genera una transazione bancaria italiana realistica.
+                
+                IMPORTANTE:
+                - Il dettaglio deve essere tipico dei bonifici italiani
+                - La causale deve essere concisa e professionale
+                - La controparte può essere uguale o leggermente diversa dal beneficiario
+                - Usa terminologia bancaria italiana standard
+                - Include il numero fattura nel dettaglio e/o causale
+                """),
+                ("human", "Attributi transazione:\n{attributi_transazione}")
             ])
-        attributi_transazione = f"""
-        - id: {uuid4()}
-        - Beneficiario: {prestatore}
-        - Importo: €{importo:.2f}
-        - Numero fattura: {numero_fattura}
-        """
+            
+            attributi_transazione = f"""
+            BENEFICIARIO: {fattura.prestatore}
+            IMPORTO: €{importo:.2f}
+            NUMERO_FATTURA: {fattura.numero_fattura}
+            DESCRIZIONE_FATTURA: {fattura.descrizione[:100]}...
+            """
+        else:
+            prompt_template = ChatPromptTemplate.from_messages([
+                ("system", """Genera una transazione bancaria italiana realistica.
+                
+                IMPORTANTE:
+                - Il dettaglio deve essere tipico dei bonifici italiani
+                - La causale deve essere concisa e professionale
+                - La controparte può essere uguale o leggermente diversa dal beneficiario
+                - Usa terminologia bancaria italiana standard
+                - NON includere il numero fattura - usa solo descrizioni generiche del servizio
+                """),
+                ("human", "Attributi transazione:\n{attributi_transazione}")
+            ])
+            
+            attributi_transazione = f"""
+            BENEFICIARIO: {fattura.prestatore}
+            IMPORTO: €{importo:.2f}
+            DESCRIZIONE_FATTURA: {fattura.descrizione[:100]}...
+            TIPO_SERVIZIO: {fattura.tipo_servizio if hasattr(fattura, 'tipo_servizio') else 'Servizio professionale'}
+            """
         
         chain = prompt_template | self.llm_trans
-
+        
         try:
-            response : Transazione = chain.invoke({"attributi_transazione": attributi_transazione})
-            return response.dettaglio, response.causale, response.controparte
+            response: Transazione = chain.invoke({"attributi_transazione": attributi_transazione})
+            return response.dettaglio, response.causale, response.controparte, include_invoice_number
         except Exception as e:
             logger.error(f"Error generating transaction data: {e}")
-            return f"Bonifico a favore di: {prestatore}", f"Pagamento fattura {numero_fattura}", prestatore
+            
+            # Realistic fallback based on whether invoice number should be included
+            if include_invoice_number:
+                fallback_dettaglio = f"BONIFICO SEPA - Pagamento fattura n. {fattura.numero_fattura}"
+                fallback_causale = f"Pagamento fattura {fattura.numero_fattura}"
+            else:
+                # Generic fallback without invoice number
+                service_type = getattr(fattura, 'tipo_servizio', 'servizi')
+                fallback_dettaglio = f"BONIFICO SEPA - Pagamento {service_type}"
+                fallback_causale = f"Pagamento {service_type}"
+            
+            fallback_controparte = fattura.prestatore
+            
+            return fallback_dettaglio, fallback_causale, fallback_controparte, include_invoice_number
 
 
 class SyntheticDataGenerator:
@@ -243,13 +302,14 @@ class SyntheticDataGenerator:
         
         # Generate description and committente using AI in single call
         tipo_servizio = random.choice(self.service_types[company['settore']])
-        descrizione, committente = self.ai_generator.generate_invoice_data(
-            company['settore'], company['nome'], importo, tipo_servizio
+        descrizione, committente, numero_fattura = self.ai_generator.generate_invoice_data(
+            data_emissione, company['settore'], company['nome'], importo, tipo_servizio
         )
         
         return Fattura(
             data_emissione=data_emissione,
             data_scadenza=data_scadenza,
+            numero_fattura=numero_fattura,
             descrizione=descrizione,
             importo=importo,
             prestatore=company['nome'],
@@ -268,12 +328,9 @@ class SyntheticDataGenerator:
         # Generate payment date based on timing pattern
         payment_date = self._generate_timing_pattern(fattura.data_emissione, timing_pattern)
         
-        # Generate numero fattura for reference
-        numero_fattura = f"FT{fattura.data_emissione.year}{random.randint(1000, 9999)}"
-        
         # Generate dettaglio, causale and controparte using AI in single call
-        dettaglio, causale, controparte = self.ai_generator.generate_transaction_data(
-            fattura.prestatore, payment_amount, numero_fattura
+        dettaglio, causale, controparte, include_invoice_number = self.ai_generator.generate_transaction_data(
+            fattura, payment_amount
         )
         
         # Apply noise to causale based on quality level
@@ -285,7 +342,8 @@ class SyntheticDataGenerator:
             importo=payment_amount,
             tipologia_movimento="pagamento",
             controparte=controparte,
-            causale=causale
+            causale=causale,
+            invoice_number=1 if include_invoice_number else 0
         )
     
     def generate_scenario_1_1_perfect(self, n_pairs: int) -> Tuple[List[Fattura], List[Transazione], List[GroundTruth]]:
@@ -351,6 +409,7 @@ class SyntheticDataGenerator:
                 temp_fattura = Fattura(
                     data_emissione=fattura.data_emissione,
                     data_scadenza=fattura.data_scadenza,
+                    numero_fattura=fattura.numero_fattura,
                     descrizione=fattura.descrizione,
                     importo=installment_amount,
                     prestatore=fattura.prestatore,
@@ -444,24 +503,35 @@ class SyntheticDataGenerator:
 DEFAULT_CONFIG = {
     'scenarios': {
         'perfect_1_1': 5,
-        'installments_1_n': 3,
+        'installments_1_n': 5,
+        'standalone_invoices': 3,
+        'standalone_payments': 3,
     },
     'quality_distribution': {
         'perfect': 0.4,
-        'fuzzy': 0.5,
-        'noisy': 0.1
+        'fuzzy': 0.4,
+        'noisy': 0.2
     },
-    'timing_distribution': {
-        'standard': 0.6,
-        'delayed': 0.2,
+    'amount_patterns': {
+        'exact': 0.8,
+        'partial': 0.05,
+        'excess': 0.05,
+        'discount': 0.05,
+        'penalty': 0.05
+    },
+    'timing_patterns': {
+        'standard': 0.7,
+        'delayed': 0.15,
         'early': 0.1,
-        'same_day': 0.1
+        'same_day': 0.05
     }
 }
 
 def main():
     try:
-        # Load environment variables
+        assert check_write_permission('output/invoices.csv')
+        assert check_write_permission('output/payments.csv')
+        assert check_write_permission('output/ground_truth.csv')
         success = load_dotenv()
         if not success:
             raise EnvironmentConfigError('Cannot load .env file. Please ensure .env file exists and is properly formatted.')
@@ -484,6 +554,11 @@ def main():
         generator.export_dataset(dataset)
         
         logger.info("Dataset generation completed!")
+
+        csv_to_xlsx_sheets(
+            ['output/invoices.csv', 'output/payments.csv', 'output/ground_truth.csv'],
+            'output/dataset.xlsx'
+            )
         
     except EnvironmentConfigError as e:
         logger.error(f"Environment configuration error: {e}")

@@ -17,6 +17,11 @@ class Fattura(BaseModel):
         examples = ['10-08-2025', '09-07-2024', '31/12/2024', '12/03/2024'],
         description = "data di emissione fattura"
     )
+    numero_fattura: str = Field(
+        ...,
+        examples = ['FT/2024/001', '2025/123', 'FV-00045', 'FATT2024-0001', '001/2024'],
+        description = "Numero identificativo univoco della fattura"
+    )
     descrizione: str = Field(
         ...,
         examples = [
@@ -133,4 +138,5 @@ class Transazione(BaseModel):
         ],
         description = "causale della transazione"
     )
+    invoice_number: int #whether or not the descrizione/causal contains invoice number
     

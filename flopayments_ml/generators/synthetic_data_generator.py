@@ -9,6 +9,7 @@ import logging
 
 from ..core.data_models import Fattura, Transazione
 from ..core.data_types import MatchType, QualityLevel, TimingPattern, AmountPattern, GroundTruth
+from dataclasses import asdict
 from ..core.exceptions import ValidationError
 from .ai_text_generator import AITextGenerator
 from ..utils.file_utils import check_write_permission

@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from flopayments_ml import SyntheticDataGenerator, DEFAULT_CONFIG
 from flopayments_ml.core.exceptions import EnvironmentConfigError
 from flopayments_ml.utils.file_utils import check_write_permission
+from flopayments_ml.utils.export_utils import csv_to_xlsx_sheets
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,6 +41,10 @@ def main():
         
         # Export dataset
         generator.export_dataset(dataset, output_dir="output")
+        csv_to_xlsx_sheets(
+            csv_files=['output/invoices.csv', 'output/payments.csv', 'output/ground_truth.csv'],
+            output_xlsx_file='output/dataset.xlsx'
+        )
         
         logger.info("Dataset generation completed!")
         

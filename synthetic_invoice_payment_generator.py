@@ -14,7 +14,8 @@ from langchain_openai import AzureChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage, AIMessage
 from langchain.prompts import ChatPromptTemplate
 from flopayments_ml.core.data_models import Fattura, Transazione
-from dataclasses import dataclass, asdict
+from flopayments_ml.core.data_types import GroundTruth
+from dataclasses import asdict
 from dotenv import load_dotenv
 from flopayments_ml.utils.file_utils import check_write_permission
 from flopayments_ml.utils.export_utils import csv_to_xlsx_sheets
@@ -54,14 +55,6 @@ class AmountPattern(Enum):
     DISCOUNT = "discount"
     PENALTY = "penalty"
 
-@dataclass
-class GroundTruth:
-    fattura_id: str
-    pagamento_id: str
-    match_type: str
-    confidence: float
-    amount_covered: float
-    notes: str
 
 
 class AITextGenerator:

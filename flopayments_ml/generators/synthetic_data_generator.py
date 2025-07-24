@@ -3,6 +3,7 @@ import json
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 import random
 import uuid
 from typing import Dict, List, Tuple, Optional
@@ -388,17 +389,30 @@ class SyntheticDataGenerator:
         """Generate multiple invoices within the same billing period"""
         fatture = []
         
-        # Define billing period start date
+        # Define a random reference "today" within the last month so that
+        # generated billing periods are not always anchored to the real current
+        # date. This keeps the dataset temporally consistent but still varied
+        # over time.
+        real_today = datetime.today().date()
+        today_range_start = real_today - relativedelta(months=1)
+        reference_today = self.fake.date_between_dates(today_range_start, real_today)
+
         if billing_period == "monthly":
-            period_start = self.fake.date_between(start_date='-6m', end_date='-1m')
-            period_end = period_start.replace(day=28) + timedelta(days=4)  # End of month
-            period_end = period_end - timedelta(days=period_end.day)
+            start_range_start = reference_today - relativedelta(months=6)
+            start_range_end = reference_today - relativedelta(months=1)
+            period_start = self.fake.date_between_dates(start_range_start, start_range_end)
+            # Last day of the invoice month
+            period_end = (period_start.replace(day=1) + relativedelta(months=1)) - timedelta(days=1)
         elif billing_period == "quarterly":
-            period_start = self.fake.date_between(start_date='-9m', end_date='-3m')
-            period_end = period_start + timedelta(days=90)
+            start_range_start = reference_today - relativedelta(months=9)
+            start_range_end = reference_today - relativedelta(months=3)
+            period_start = self.fake.date_between_dates(start_range_start, start_range_end)
+            period_end = period_start + relativedelta(months=3) - timedelta(days=1)
         else:  # weekly
-            period_start = self.fake.date_between(start_date='-3m', end_date='-2w')
-            period_end = period_start + timedelta(days=7)
+            start_range_start = reference_today - relativedelta(months=3)
+            start_range_end = reference_today - relativedelta(weeks=2)
+            period_start = self.fake.date_between_dates(start_range_start, start_range_end)
+            period_end = period_start + timedelta(days=7) - timedelta(days=1)
         
         # Generate project/service linking patterns
         link_type = random.choice(["project_code", "monthly_service", "recurring_delivery", "none"])

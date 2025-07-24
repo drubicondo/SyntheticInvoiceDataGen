@@ -1,6 +1,14 @@
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
-from pydantic import BaseModel, Field, PositiveFloat, NonNegativeFloat, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PositiveFloat,
+    NonNegativeFloat,
+    ValidationError,
+    FieldValidationInfo,
+    field_validator,
+)
 from typing import Literal, Optional
 
 
@@ -51,7 +59,9 @@ class Fattura(BaseModel):
 
     @field_validator('data_scadenza')
     @classmethod
-    def validate_scadenza_date(cls, v: datetime, info: Field) -> datetime:
+    def validate_scadenza_date(
+        cls, v: datetime, info: FieldValidationInfo
+    ) -> datetime:
         # Access the entire model's values to get data_emissione
         if info.data and 'data_emissione' in info.data:
             data_emissione = info.data['data_emissione']

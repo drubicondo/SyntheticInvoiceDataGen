@@ -1,14 +1,21 @@
 import os
 import random
 import logging
-from uuid import uuid4
 from typing import Tuple
 from langchain_openai import AzureChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from datetime import datetime  # <-- Add this import
 
 from ..core.data_models import Fattura, Transazione
+from pydantic import BaseModel
 from ..core.exceptions import GenerationError
+
+
+class AIInvoiceOutput(BaseModel):
+    """Minimal schema used when requesting invoice data from the LLM."""
+    descrizione: str
+    committente: str
+    numero_fattura: str
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +31,8 @@ class AITextGenerator:
             openai_api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             temperature=temperature
         )
-        self.llm_fattura = self.llm.with_structured_output(Fattura)
+        # Use a minimal schema when asking the LLM to avoid validation issues
+        self.llm_invoice = self.llm.with_structured_output(AIInvoiceOutput)
         self.llm_trans = self.llm.with_structured_output(Transazione)
     
     def generate_invoice_data(self, company_id: str, data_emissione: str, settore: str, prestatore: str, 
@@ -60,11 +68,9 @@ class AITextGenerator:
         - Tipo servizio: {tipo_servizio}
         """
         
-        chain = prompt_template | self.llm_fattura
+        chain = prompt_template | self.llm_invoice
         try:
-            response: Fattura = chain.invoke({"attributi_fattura": attributi_fattura})
-            # Manually set the id to ensure consistency
-            response.id = company_id
+            response: AIInvoiceOutput = chain.invoke({"attributi_fattura": attributi_fattura})
             return response.descrizione, response.committente, response.numero_fattura
         except Exception as e:
             logger.error(f"Error generating invoice data: {e}")

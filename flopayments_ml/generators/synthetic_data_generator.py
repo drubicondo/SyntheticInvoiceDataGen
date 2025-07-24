@@ -397,7 +397,7 @@ class SyntheticDataGenerator:
             period_start = self.fake.date_between(start_date='-9m', end_date='-3m')
             period_end = period_start + timedelta(days=90)
         else:  # weekly
-            period_start = self.fake.date_between(start_date='-2m', end_date='-2w')
+            period_start = self.fake.date_between(start_date='-3m', end_date='-2w')
             period_end = period_start + timedelta(days=7)
         
         # Generate project/service linking patterns

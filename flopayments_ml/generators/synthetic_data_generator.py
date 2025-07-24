@@ -655,10 +655,13 @@ class SyntheticDataGenerator:
         for company in companies_to_use:
             # Generate a dummy invoice to use generate_payment, as it requires a Fattura object.
             # The generated payment will not be linked to this dummy invoice in the output.
+            data_emissione = self.fake.date_between(start_date='-1y', end_date='today')
+            data_scadenza = data_emissione + timedelta(days=random.randint(30, 90))
+
             dummy_fattura = Fattura(
                 id=uuid.uuid4(),
-                data_emissione=self.fake.date_between(start_date='-1y', end_date='today'),
-                data_scadenza=self.fake.date_between(start_date='-1y', end_date='today'),
+                data_emissione=data_emissione,
+                data_scadenza=data_scadenza,
                 numero_fattura="DUMMY",
                 descrizione="Dummy invoice for standalone payment generation",
                 importo=random.uniform(50, 5000),

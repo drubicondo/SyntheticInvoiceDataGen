@@ -611,7 +611,58 @@ class SyntheticDataGenerator:
                     notes=f"Installment {j+1}/{n_installments} for invoice {fattura.id}"
                 ))
         return fatture, transazioni, ground_truth
+
+    def generate_scenario_standalone_invoices(self, n_invoices: int) -> Tuple[List[Fattura], List[Transazione], List[GroundTruth]]:
+        """Generate a number of standalone invoices (without payments)."""
+        fatture = []
+        transazioni = []  # No transactions for standalone invoices
+        ground_truth = [] # No ground truth for standalone invoices
     
+        companies_to_use = self._select_companies_for_scenario(n_invoices)
+    
+        for company in companies_to_use:
+            fattura = self.generate_invoice(
+                company,
+                scenario_type="standalone_invoice",
+                use_recurrency=False # Standalone invoices might not follow recurring patterns
+            )
+            fatture.append(fattura)
+    
+        return fatture, transazioni, ground_truth
+
+    def generate_scenario_standalone_payments(self, n_payments: int) -> Tuple[List[Fattura], List[Transazione], List[GroundTruth]]:
+        """Generate a number of standalone payments (without invoices)."""
+        fatture = []  # No invoices for standalone payments
+        transazioni = []
+        ground_truth = [] # No ground truth for standalone payments
+    
+        companies_to_use = self._select_companies_for_scenario(n_payments)
+    
+        for company in companies_to_use:
+            # Generate a dummy invoice to use generate_payment, as it requires a Fattura object.
+            # The generated payment will not be linked to this dummy invoice in the output.
+            dummy_fattura = Fattura(
+                id=uuid.uuid4(),
+                data_emissione=self.fake.date_between(start_date='-1y', end_date='today'),
+                data_scadenza=self.fake.date_between(start_date='-1y', end_date='today'),
+                numero_fattura="DUMMY",
+                descrizione="Dummy invoice for standalone payment generation",
+                importo=random.uniform(50, 5000),
+                prestatore=company['nome'],
+                committente=self.fake.company()
+            )
+            
+            transazione = self.generate_payment(
+                dummy_fattura, # Pass dummy invoice, but it won't be part of the final dataset
+                company,
+                AmountPattern.EXACT, # Or choose another pattern as appropriate
+                TimingPattern.STANDARD, # Or choose another pattern as appropriate
+                QualityLevel.NOISY # Standalone payments are often noisy/unmatched
+            )
+            transazioni.append(transazione)
+    
+        return fatture, transazioni, ground_truth
+
     def generate_dataset(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
         """Generate complete synthetic dataset"""
         all_fatture = []
@@ -634,6 +685,33 @@ class SyntheticDataGenerator:
         if scenarios_config.get('installments_1_n', 0) > 0:
             fatture, transazioni, gt = self.generate_scenario_1_n_installments(
                 scenarios_config['installments_1_n']
+            )
+            all_fatture.extend(fatture)
+            all_transazioni.extend(transazioni)
+            all_ground_truth.extend(gt)
+
+        # N:1 Group Payment
+        if scenarios_config.get('group_payment_n_1', 0) > 0:
+            fatture, transazioni, gt = self.generate_scenario_n_1_group_payment(
+                scenarios_config['group_payment_n_1']
+            )
+            all_fatture.extend(fatture)
+            all_transazioni.extend(transazioni)
+            all_ground_truth.extend(gt)
+
+        # Standalone Invoices
+        if scenarios_config.get('standalone_invoices', 0) > 0:
+            fatture, transazioni, gt = self.generate_scenario_standalone_invoices(
+                scenarios_config['standalone_invoices']
+            )
+            all_fatture.extend(fatture)
+            all_transazioni.extend(transazioni)
+            all_ground_truth.extend(gt)
+
+        # Standalone Payments
+        if scenarios_config.get('standalone_payments', 0) > 0:
+            fatture, transazioni, gt = self.generate_scenario_standalone_payments(
+                scenarios_config['standalone_payments']
             )
             all_fatture.extend(fatture)
             all_transazioni.extend(transazioni)

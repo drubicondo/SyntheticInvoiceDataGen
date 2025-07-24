@@ -13,11 +13,11 @@ from enum import Enum
 from langchain_openai import AzureChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage, AIMessage
 from langchain.prompts import ChatPromptTemplate
-from data_model import Fattura, Transazione
+from flopayments_ml.core.data_models import Fattura, Transazione
 from dataclasses import dataclass, asdict
 from dotenv import load_dotenv
-from utils import check_write_permission
-from csv_to_xlsx import csv_to_xlsx_sheets
+from flopayments_ml.utils.file_utils import check_write_permission
+from flopayments_ml.utils.export_utils import csv_to_xlsx_sheets
 
 
 class EnvironmentConfigError(Exception):

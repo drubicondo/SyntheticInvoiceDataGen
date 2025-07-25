@@ -156,6 +156,115 @@ class AITextGenerator:
             service_type = getattr(fattura, 'tipo_servizio', 'servizi')
             fallback_dettaglio = f"BONIFICO SEPA - Pagamento {service_type}"
             fallback_causale = f"Pagamento {service_type}"
-        
+
         fallback_controparte = fattura.prestatore
         return fallback_dettaglio, fallback_causale, fallback_controparte, include_invoice_number
+
+    def generate_invoice_data_batch(self, invoices: list[dict]) -> list[Tuple[str, str, str]]:
+        """Generate invoice texts for a batch of invoices."""
+        prompt_template = ChatPromptTemplate.from_messages([
+            ("system", """Genera una fattura italiana realistica.
+
+            IMPORTANTE per la DESCRIZIONE:
+            - Usa un linguaggio tecnico e burocratico tipico delle fatture italiane
+            - Sii conciso ma specifico (max 2-3 righe)
+            - Includi dettagli tecnici specifici del settore
+            - Usa abbreviazioni comuni: \"N.\", \"Rif.\", \"Cod.\", \"Art.\", \"Prot.\"
+            - Includi riferimenti a normative quando appropriato
+            - Usa terminologia settoriale specifica
+            - Evita descrizioni generiche o marketing
+            - Eventuali date menzionate devono essere coerenti con la data di emissione della fattura
+            - Il tipo di servizio/prodotto menzionato nella descrizione dev'essere coerente con l'importo della fattura
+
+            COMMITTENTE:
+            - Genera un nome aziendale italiano realistico
+            - Varia tra SRL, SPA, SNCS, SAS, Ditta individuale
+            - Il nome dell'azienda dev'essere coerente con il servizio/prodotto menzionato nella descrizione
+            """),
+            ("human", "Attributi fattura:\n{attributi_fattura}")
+        ])
+
+        chain = prompt_template | self.llm_invoice
+        inputs = []
+        for inv in invoices:
+            attributi = f"""
+            - Data emissione: {inv['data_emissione']}
+            - Settore: {inv['settore']}
+            - Prestatore: {inv['prestatore']}
+            - Importo: €{inv['importo']:.2f}
+            - Tipo servizio: {inv['tipo_servizio']}
+            """
+            inputs.append({"attributi_fattura": attributi})
+
+        try:
+            responses = chain.batch(inputs)
+            return [(r.descrizione, r.committente, r.numero_fattura) for r in responses]
+        except Exception as e:
+            logger.error(f"Error generating invoice batch: {e}")
+            return [self._get_fallback_invoice_data(i['tipo_servizio'], i['data_emissione']) for i in invoices]
+
+    def generate_transaction_data_batch(self, transactions: list[dict]) -> list[Tuple[str, str, str, bool]]:
+        """Generate transaction texts for a batch of payments."""
+        prompt_with = ChatPromptTemplate.from_messages([
+            ("system", """Genera una transazione bancaria italiana realistica.
+
+            IMPORTANTE:
+            - Il dettaglio deve essere tipico dei bonifici italiani
+            - La causale deve essere concisa e professionale
+            - La controparte può essere uguale o leggermente diversa dal beneficiario
+            - Usa terminologia bancaria italiana standard
+            - Include il numero fattura nel dettaglio e/o causale
+            """),
+            ("human", "Attributi transazione:\n{attributi_transazione}")
+        ])
+
+        prompt_without = ChatPromptTemplate.from_messages([
+            ("system", """Genera una transazione bancaria italiana realistica.
+
+            IMPORTANTE:
+            - Il dettaglio deve essere tipico dei bonifici italiani
+            - La causale deve essere concisa e professionale
+            - La controparte può essere uguale o leggermente diversa dal beneficiario
+            - Usa terminologia bancaria italiana standard
+            - NON includere il numero fattura - usa solo descrizioni generiche del servizio
+            """),
+            ("human", "Attributi transazione:\n{attributi_transazione}")
+        ])
+
+        chain_with = prompt_with | self.llm_trans
+        chain_without = prompt_without | self.llm_trans
+
+        inputs_with, inputs_without = [], []
+        idx_with, idx_without = [], []
+        for idx, t in enumerate(transactions):
+            fattura = t['fattura']
+            attrib = f"""
+            BENEFICIARIO: {fattura.prestatore}
+            IMPORTO: €{t['importo']:.2f}
+            {f'NUMERO_FATTURA: {fattura.numero_fattura}' if t['include_invoice_number'] else ''}
+            DESCRIZIONE_FATTURA: {fattura.descrizione[:100]}...
+            TIPO_SERVIZIO: {getattr(fattura, 'tipo_servizio', 'Servizio professionale')}
+            """
+            if t['include_invoice_number']:
+                inputs_with.append({"attributi_transazione": attrib})
+                idx_with.append(idx)
+            else:
+                inputs_without.append({"attributi_transazione": attrib})
+                idx_without.append(idx)
+
+        results = [None] * len(transactions)
+        try:
+            if inputs_with:
+                res_with = chain_with.batch(inputs_with)
+                for i, r in zip(idx_with, res_with):
+                    results[i] = (r.dettaglio, r.causale, r.controparte, True)
+            if inputs_without:
+                res_without = chain_without.batch(inputs_without)
+                for i, r in zip(idx_without, res_without):
+                    results[i] = (r.dettaglio, r.causale, r.controparte, False)
+        except Exception as e:
+            logger.error(f"Error generating transaction batch: {e}")
+            for i, t in enumerate(transactions):
+                results[i] = self._get_fallback_transaction_data(t['fattura'], t['include_invoice_number'])
+
+        return results

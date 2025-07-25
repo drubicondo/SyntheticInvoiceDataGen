@@ -24,6 +24,7 @@ class SyntheticDataGenerator:
     def __init__(self, config: Dict, azure_endpoint: str):
         self.config = config
         self.fake = Faker('it_IT')
+        self.batch_size = self.config.get('batch_size', 10)
         self.ai_generator = AITextGenerator(azure_endpoint)
         self.companies = []
         self.company_invoice_history = {}  # Track invoice history per company
@@ -254,6 +255,166 @@ class SyntheticDataGenerator:
         
         return fattura
 
+    def _chunk_list(self, items: List, size: int) -> List[List]:
+        """Split a list into chunks of a given size."""
+        return [items[i:i + size] for i in range(0, len(items), size)]
+
+    def _generate_invoices_batch(self, companies: List[Dict], scenario_type: str, amount_range: Optional[Tuple[float, float]] = None, use_recurrency: bool = False) -> List[Fattura]:
+        """Generate invoices for a batch of companies using a single AI call."""
+        prepared = []
+        ai_inputs = []
+
+        for company in companies:
+            company_id = company['id']
+            patterns = self.recurring_patterns.get(company_id, {})
+
+            data_emissione = self.fake.date_between(start_date='-1y', end_date='today')
+            data_scadenza = data_emissione + timedelta(days=random.randint(30, 90))
+
+            if amount_range:
+                importo = random.uniform(*amount_range)
+            else:
+                importo = random.uniform(100, 5000)
+                if scenario_type == "installment":
+                    importo = np.random.lognormal(mean=8.5, sigma=0.8)
+                else:
+                    importo = np.random.lognormal(mean=7.5, sigma=1.0)
+
+            if use_recurrency and patterns.get('provides_similar_services', False):
+                tipo_servizio = random.choice(patterns.get('preferred_services', self.service_types[company['settore']]))
+            else:
+                tipo_servizio = random.choice(self.service_types[company['settore']])
+
+            if use_recurrency and patterns.get('has_recurring_clients', False) and random.random() < 0.6:
+                committente = random.choice(patterns.get('recurring_clients', [self._generate_client_name(company['settore'])]))
+            else:
+                committente = self._generate_client_name(company['settore'])
+
+            ai_inputs.append({
+                'company_id': company['id'],
+                'data_emissione': data_emissione.strftime('%Y-%m-%d'),
+                'settore': company['settore'],
+                'prestatore': company['nome'],
+                'importo': importo,
+                'tipo_servizio': tipo_servizio
+            })
+
+            prepared.append({
+                'company': company,
+                'company_id': company_id,
+                'data_emissione': data_emissione,
+                'data_scadenza': data_scadenza,
+                'importo': importo,
+                'tipo_servizio': tipo_servizio,
+                'committente': committente,
+                'patterns': patterns,
+                'use_recurrency': use_recurrency
+            })
+
+        ai_results = self.ai_generator.generate_invoice_data_batch(ai_inputs)
+        fatture = []
+        for prep, (descrizione, ai_committente, numero_fattura) in zip(prepared, ai_results):
+            committente = prep['committente']
+            if not (prep['use_recurrency'] and prep['patterns'].get('has_recurring_clients', False)):
+                committente = ai_committente
+
+            fattura = Fattura(
+                id=uuid.uuid4(),
+                data_emissione=prep['data_emissione'],
+                data_scadenza=prep['data_scadenza'],
+                numero_fattura=numero_fattura,
+                descrizione=descrizione,
+                importo=prep['importo'],
+                prestatore=prep['company']['nome'],
+                committente=committente
+            )
+
+            self.company_invoice_history[prep['company_id']].append({
+                'fattura_id': fattura.id,
+                'committente': committente,
+                'tipo_servizio': prep['tipo_servizio'],
+                'importo': prep['importo'],
+                'data_emissione': prep['data_emissione']
+            })
+
+            fatture.append(fattura)
+
+        return fatture
+
+    def _generate_payments_batch(self, fatture: List[Fattura], companies: List[Dict], amount_patterns: List[AmountPattern], timing_patterns: List[TimingPattern], quality_levels: List[QualityLevel]) -> List[Transazione]:
+        """Generate payments for a batch of invoices."""
+        prepared = []
+        ai_inputs = []
+
+        for fattura, company, amount_pattern, timing_pattern, quality_level in zip(fatture, companies, amount_patterns, timing_patterns, quality_levels):
+            base_amount = fattura.importo
+            if amount_pattern == AmountPattern.EXACT:
+                importo = base_amount
+            elif amount_pattern == AmountPattern.PARTIAL:
+                importo = base_amount * random.uniform(0.3, 0.8)
+            elif amount_pattern == AmountPattern.EXCESS:
+                importo = base_amount * random.uniform(1.01, 1.1)
+            elif amount_pattern == AmountPattern.DISCOUNT:
+                importo = base_amount * random.uniform(0.9, 0.98)
+            elif amount_pattern == AmountPattern.PENALTY:
+                importo = base_amount * random.uniform(1.02, 1.05)
+            else:
+                importo = base_amount
+
+            if timing_pattern == TimingPattern.STANDARD:
+                days_offset = random.randint(0, 90)
+                data_pagamento = fattura.data_emissione + timedelta(days=days_offset)
+            elif timing_pattern == TimingPattern.DELAYED:
+                days_offset = random.randint(91, 180)
+                data_pagamento = fattura.data_emissione + timedelta(days=days_offset)
+            elif timing_pattern == TimingPattern.EARLY:
+                days_offset = random.randint(-30, -1)
+                data_pagamento = fattura.data_emissione + timedelta(days=days_offset)
+            elif timing_pattern == TimingPattern.SAME_DAY:
+                data_pagamento = fattura.data_emissione
+            else:
+                days_offset = random.randint(0, 90)
+                data_pagamento = fattura.data_emissione + timedelta(days=days_offset)
+
+            if quality_level == QualityLevel.PERFECT:
+                invoice_prob = 0.5
+            elif quality_level == QualityLevel.FUZZY:
+                invoice_prob = 0.25
+            else:
+                invoice_prob = 0.1
+
+            include_invoice = random.random() < invoice_prob
+
+            ai_inputs.append({
+                'fattura': fattura,
+                'importo': importo,
+                'include_invoice_number': include_invoice
+            })
+
+            prepared.append({
+                'data_pagamento': data_pagamento,
+                'importo': importo,
+                'include_invoice': include_invoice
+            })
+
+        ai_results = self.ai_generator.generate_transaction_data_batch(ai_inputs)
+
+        transazioni = []
+        for prep, (dettaglio, causale, controparte, has_invoice_ref) in zip(prepared, ai_results):
+            transazione = Transazione(
+                id=str(uuid.uuid4()),
+                data=prep['data_pagamento'],
+                dettaglio=dettaglio,
+                importo=prep['importo'],
+                tipologia_movimento="pagamento",
+                controparte=controparte,
+                causale=causale,
+                invoice_number=1 if has_invoice_ref else 0
+            )
+            transazioni.append(transazione)
+
+        return transazioni
+
     def generate_payment(self, fattura: Fattura, company: Dict, 
                         amount_pattern: AmountPattern = AmountPattern.EXACT,
                         timing_pattern: TimingPattern = TimingPattern.STANDARD,
@@ -327,34 +488,33 @@ class SyntheticDataGenerator:
         fatture = []
         transazioni = []
         ground_truth = []
-    
+
         companies_to_use = self._select_companies_for_scenario(n_pairs)
-    
-        for company in companies_to_use:
-            # Generate invoice with one-shot pricing distribution
-            fattura = self.generate_invoice(company, scenario_type="oneshot", use_recurrency=True)
-            fatture.append(fattura)
-    
-            # Generate matching payment
-            transazione = self.generate_payment(
-                fattura, company,
-                AmountPattern.EXACT,
-                TimingPattern.STANDARD,
-                QualityLevel.NOISY
+
+        for batch in self._chunk_list(companies_to_use, self.batch_size):
+            batch_fatture = self._generate_invoices_batch(batch, scenario_type="oneshot", use_recurrency=True)
+            fatture.extend(batch_fatture)
+
+            batch_trans = self._generate_payments_batch(
+                batch_fatture,
+                batch,
+                [AmountPattern.EXACT] * len(batch_fatture),
+                [TimingPattern.STANDARD] * len(batch_fatture),
+                [QualityLevel.NOISY] * len(batch_fatture)
             )
-            transazioni.append(transazione)
-    
-            # Create ground truth
-            gt = GroundTruth(
-                fattura_id=str(fattura.id),
-                pagamento_id=str(transazione.id),
-                match_type=MatchType.EXACT.value,
-                confidence=1.0,
-                amount_covered=fattura.importo,
-                notes="Perfect 1:1 match"
-            )
-            ground_truth.append(gt)
-    
+            transazioni.extend(batch_trans)
+
+            for f, t in zip(batch_fatture, batch_trans):
+                gt = GroundTruth(
+                    fattura_id=str(f.id),
+                    pagamento_id=str(t.id),
+                    match_type=MatchType.EXACT.value,
+                    confidence=1.0,
+                    amount_covered=f.importo,
+                    notes="Perfect 1:1 match"
+                )
+                ground_truth.append(gt)
+
         return fatture, transazioni, ground_truth
     
     def _select_companies_for_scenario(self, n_items: int) -> List[Dict]:
@@ -429,15 +589,13 @@ class SyntheticDataGenerator:
         else:
             base_description = None
         
+        invoice_inputs = []
+        meta = []
         for i in range(n_invoices):
-            # Generate invoice date within billing period
             data_emissione = self.fake.date_between(start_date=period_start, end_date=period_end)
             data_scadenza = self._generate_scadenza_date(data_emissione)
-            
-            # Generate amount for group payment scenario
             importo = self._generate_group_invoice_amount()
-            
-            # Generate linked descriptions if applicable
+
             if base_description:
                 if link_type == "project_code":
                     descrizione_suffix = f" - Fase {i+1}"
@@ -447,31 +605,24 @@ class SyntheticDataGenerator:
                     descrizione_suffix = f" - N. {i+1}/{n_invoices}"
                 else:
                     descrizione_suffix = ""
-                
-                # Use AI to generate realistic description incorporating the link
                 tipo_servizio = f"{base_description}{descrizione_suffix}"
-                descrizione, committente, numero_fattura = self.ai_generator.generate_invoice_data(
-                    company_id=company['id'],
-                    data_emissione=data_emissione.strftime('%Y-%m-%d'),
-                    settore=company['settore'],
-                    prestatore=company['nome'],
-                    importo=importo,
-                    tipo_servizio=tipo_servizio
-                )
             else:
-                # Generate normal invoice
                 tipo_servizio = random.choice(self.service_types[company['settore']])
-                descrizione, committente, numero_fattura = self.ai_generator.generate_invoice_data(
-                    company_id=company['id'], 
-                    data_emissione=data_emissione.strftime('%Y-%m-%d'), 
-                    settore=company['settore'], 
-                    prestatore=company['nome'], 
-                    importo=importo, 
-                    tipo_servizio=tipo_servizio
-                )
 
+            invoice_inputs.append({
+                'company_id': company['id'],
+                'data_emissione': data_emissione.strftime('%Y-%m-%d'),
+                'settore': company['settore'],
+                'prestatore': company['nome'],
+                'importo': importo,
+                'tipo_servizio': tipo_servizio
+            })
+            meta.append((data_emissione, data_scadenza, importo))
+
+        results = self.ai_generator.generate_invoice_data_batch(invoice_inputs)
+        for (data_emissione, data_scadenza, importo), (descrizione, committente, numero_fattura) in zip(meta, results):
             fattura = Fattura(
-                id=uuid.uuid4(),  # Use unique ID for each invoice
+                id=uuid.uuid4(),
                 data_emissione=data_emissione,
                 data_scadenza=data_scadenza,
                 numero_fattura=numero_fattura,
@@ -592,38 +743,40 @@ class SyntheticDataGenerator:
         ground_truth = []
     
         companies_to_use = self._select_companies_for_scenario(n_invoices)
-    
-        for i, company in enumerate(companies_to_use):
-            fattura = self.generate_invoice(
-                company,
-                amount_range=(2000, 15000),  # Higher amounts for installment payments
+
+        for batch in self._chunk_list(companies_to_use, self.batch_size):
+            batch_fatture = self._generate_invoices_batch(
+                batch,
+                amount_range=(2000, 15000),
                 scenario_type="installment",
-                use_recurrency=True
+                use_recurrency=True,
             )
-            fatture.append(fattura)
-    
-            # Split the invoice into 2-4 installments
-            n_installments = random.choice([2, 3, 4])
-            installment_amount = round(fattura.importo / n_installments, 2)
-            for j in range(n_installments):
-                transazione = self.generate_payment(
-                    fattura, company,
-                    AmountPattern.EXACT,
-                    TimingPattern.STANDARD,
-                    QualityLevel.NOISY
-                )
-                # Manually set the amount and date for each installment
-                transazione.importo = installment_amount
-                transazione.data = fattura.data_emissione + timedelta(days=30 * (j + 1))
-                transazioni.append(transazione)
-                ground_truth.append(GroundTruth(
-                    fattura_id=str(fattura.id),
-                    pagamento_id=str(transazione.id),
-                    match_type=MatchType.EXACT.value,  # Use a valid MatchType
-                    confidence=1.0,  # Set confidence as appropriate
-                    amount_covered=transazione.importo,  # Or the correct logic for your scenario
-                    notes=f"Installment {j+1}/{n_installments} for invoice {fattura.id}"
-                ))
+            fatture.extend(batch_fatture)
+
+            for fattura, company in zip(batch_fatture, batch):
+                n_installments = random.choice([2, 3, 4])
+                installment_amount = round(fattura.importo / n_installments, 2)
+                for j in range(n_installments):
+                    transazione = self.generate_payment(
+                        fattura,
+                        company,
+                        AmountPattern.EXACT,
+                        TimingPattern.STANDARD,
+                        QualityLevel.NOISY,
+                    )
+                    transazione.importo = installment_amount
+                    transazione.data = fattura.data_emissione + timedelta(days=30 * (j + 1))
+                    transazioni.append(transazione)
+                    ground_truth.append(
+                        GroundTruth(
+                            fattura_id=str(fattura.id),
+                            pagamento_id=str(transazione.id),
+                            match_type=MatchType.EXACT.value,
+                            confidence=1.0,
+                            amount_covered=transazione.importo,
+                            notes=f"Installment {j+1}/{n_installments} for invoice {fattura.id}",
+                        )
+                    )
         return fatture, transazioni, ground_truth
 
     def generate_scenario_standalone_invoices(self, n_invoices: int) -> Tuple[List[Fattura], List[Transazione], List[GroundTruth]]:
@@ -633,14 +786,14 @@ class SyntheticDataGenerator:
         ground_truth = [] # No ground truth for standalone invoices
     
         companies_to_use = self._select_companies_for_scenario(n_invoices)
-    
-        for company in companies_to_use:
-            fattura = self.generate_invoice(
-                company,
+
+        for batch in self._chunk_list(companies_to_use, self.batch_size):
+            batch_fatture = self._generate_invoices_batch(
+                batch,
                 scenario_type="standalone_invoice",
-                use_recurrency=False # Standalone invoices might not follow recurring patterns
+                use_recurrency=False,
             )
-            fatture.append(fattura)
+            fatture.extend(batch_fatture)
     
         return fatture, transazioni, ground_truth
 
@@ -651,32 +804,33 @@ class SyntheticDataGenerator:
         ground_truth = [] # No ground truth for standalone payments
     
         companies_to_use = self._select_companies_for_scenario(n_payments)
-    
-        for company in companies_to_use:
-            # Generate a dummy invoice to use generate_payment, as it requires a Fattura object.
-            # The generated payment will not be linked to this dummy invoice in the output.
-            data_emissione = self.fake.date_between(start_date='-1y', end_date='today')
-            data_scadenza = data_emissione + timedelta(days=random.randint(30, 90))
 
-            dummy_fattura = Fattura(
-                id=uuid.uuid4(),
-                data_emissione=data_emissione,
-                data_scadenza=data_scadenza,
-                numero_fattura="DUMMY",
-                descrizione="Dummy invoice for standalone payment generation",
-                importo=random.uniform(50, 5000),
-                prestatore=company['nome'],
-                committente=self.fake.company()
+        for batch in self._chunk_list(companies_to_use, self.batch_size):
+            dummy_invoices = []
+            for company in batch:
+                data_emissione = self.fake.date_between(start_date='-1y', end_date='today')
+                data_scadenza = data_emissione + timedelta(days=random.randint(30, 90))
+                dummy_invoices.append(
+                    Fattura(
+                        id=uuid.uuid4(),
+                        data_emissione=data_emissione,
+                        data_scadenza=data_scadenza,
+                        numero_fattura="DUMMY",
+                        descrizione="Dummy invoice for standalone payment generation",
+                        importo=random.uniform(50, 5000),
+                        prestatore=company['nome'],
+                        committente=self.fake.company(),
+                    )
+                )
+
+            batch_trans = self._generate_payments_batch(
+                dummy_invoices,
+                batch,
+                [AmountPattern.EXACT] * len(batch),
+                [TimingPattern.STANDARD] * len(batch),
+                [QualityLevel.NOISY] * len(batch),
             )
-            
-            transazione = self.generate_payment(
-                dummy_fattura, # Pass dummy invoice, but it won't be part of the final dataset
-                company,
-                AmountPattern.EXACT, # Or choose another pattern as appropriate
-                TimingPattern.STANDARD, # Or choose another pattern as appropriate
-                QualityLevel.NOISY # Standalone payments are often noisy/unmatched
-            )
-            transazioni.append(transazione)
+            transazioni.extend(batch_trans)
     
         return fatture, transazioni, ground_truth
 

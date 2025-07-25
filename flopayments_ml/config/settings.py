@@ -30,5 +30,7 @@ DEFAULT_CONFIG = {
         'excess': 0.0,
         'discount': 0.1,
         'penalty': 0.04
-    }
+    },
+    'batch_size': 10
 }
+

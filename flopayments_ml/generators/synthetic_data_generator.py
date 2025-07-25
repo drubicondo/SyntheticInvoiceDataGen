@@ -257,7 +257,7 @@ class SyntheticDataGenerator:
     def generate_payment(self, fattura: Fattura, company: Dict, 
                         amount_pattern: AmountPattern = AmountPattern.EXACT,
                         timing_pattern: TimingPattern = TimingPattern.STANDARD,
-                        quality_level: QualityLevel = QualityLevel.PERFECT) -> Transazione:
+                        quality_level: QualityLevel = QualityLevel.NOISY) -> Transazione:
         """Generate payment transaction for a given invoice"""
         
         # Calculate payment amount based on pattern
@@ -298,9 +298,9 @@ class SyntheticDataGenerator:
         
         # Determine invoice number inclusion probability based on quality level
         if quality_level == QualityLevel.PERFECT:
-            invoice_number_probability = 0.8
+            invoice_number_probability = 0.5
         elif quality_level == QualityLevel.FUZZY:
-            invoice_number_probability = 0.4
+            invoice_number_probability = 0.25
         else:  # NOISY
             invoice_number_probability = 0.1
         
@@ -340,7 +340,7 @@ class SyntheticDataGenerator:
                 fattura, company,
                 AmountPattern.EXACT,
                 TimingPattern.STANDARD,
-                QualityLevel.PERFECT
+                QualityLevel.NOISY
             )
             transazioni.append(transazione)
     
@@ -610,7 +610,7 @@ class SyntheticDataGenerator:
                     fattura, company,
                     AmountPattern.EXACT,
                     TimingPattern.STANDARD,
-                    QualityLevel.PERFECT
+                    QualityLevel.NOISY
                 )
                 # Manually set the amount and date for each installment
                 transazione.importo = installment_amount

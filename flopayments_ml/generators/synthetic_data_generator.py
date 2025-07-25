@@ -195,9 +195,8 @@ class SyntheticDataGenerator:
         company_id = company['id']
         patterns = self.recurring_patterns.get(company_id, {})
         
-        # Generate emission and due dates
+        # Generate emission date
         data_emissione = self.fake.date_between(start_date='-1y', end_date='today')
-        data_scadenza = data_emissione + timedelta(days=random.randint(30, 90))
         
         # Generate amount
         if amount_range:
@@ -209,6 +208,24 @@ class SyntheticDataGenerator:
             else:
                 importo = np.random.lognormal(mean=7.5, sigma=1.0)  # €500-€5000
         
+        # Determine data_scadenza based on rules and amount
+        if random.random() < 0.75: # 75% invoices have data_scadenza = data_emissione
+            data_scadenza = data_emissione
+        else: # 25% invoices have varied data_scadenza
+            # Define possible day ranges and their weights based on amount
+            if importo < 1000: # Smaller amounts tend to have shorter due dates
+                choices = [(1, 15), (28, 31), (60, 62)]
+                weights = [0.6, 0.3, 0.1]
+            elif importo < 5000: # Medium amounts
+                choices = [(1, 15), (28, 31), (60, 62)]
+                weights = [0.2, 0.5, 0.3]
+            else: # Larger amounts tend to have longer due dates
+                choices = [(1, 15), (28, 31), (60, 62)]
+                weights = [0.1, 0.3, 0.6]
+
+            min_days, max_days = random.choices(choices, weights=weights, k=1)[0]
+            data_scadenza = data_emissione + timedelta(days=random.randint(min_days, max_days))
+
         # Choose service type with recurrency consideration
         if use_recurrency and patterns.get('provides_similar_services', False):
             # Use preferred services for consistency

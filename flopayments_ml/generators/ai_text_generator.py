@@ -1,7 +1,7 @@
 import os
 import random
 import logging
-from typing import Tuple
+from typing import Tuple, Optional
 from langchain_openai import AzureChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from datetime import datetime
@@ -128,6 +128,75 @@ class AITextGenerator:
         )
         self.llm_invoice = self.llm.with_structured_output(Fattura)
         self.llm_trans = self.llm.with_structured_output(Transazione)
+
+    def _heuristic_transaction_type(self, fattura: Fattura) -> Optional[str]:
+        """Try to infer the transaction type from invoice information using simple heuristics."""
+        text = f"{fattura.descrizione} {fattura.prestatore} {fattura.committente}".lower()
+
+        f24_keywords = ["f24", "agenzia delle entrate", "inps", "inail", "irpef", "iva"]
+        if any(k in text for k in f24_keywords):
+            return "DELEGA F24"
+
+        adue_keywords = ["tari", "multa", "adue", "universit", "occupazione suolo"]
+        if any(k in text for k in adue_keywords):
+            return "PAGAMENTO ADUE"
+
+        sdd_keywords = ["sdd", "utenza", "bolletta", "canone", "telefon", "energia", "assicurazione"]
+        if any(k in text for k in sdd_keywords):
+            return "SEPA Direct Debit (SDD) BON.UE"
+
+        accr_keywords = ["stipend", "rimborso", "trasferta", "consulenza progetto"]
+        if any(k in text for k in accr_keywords):
+            return "ACCR BEU"
+
+        return None
+
+    def _determine_transaction_type(self, fattura: Fattura) -> str:
+        """Determine the most appropriate transaction type for the given invoice."""
+        heuristic = self._heuristic_transaction_type(fattura)
+        if heuristic:
+            return heuristic
+
+        # Fall back to AI-based classification when heuristics are insufficient
+        options = ", ".join(self.transaction_templates.keys())
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", f"""Scegli la tipologia di pagamento più probabile per la seguente fattura.\nOpzioni: {options}.\nRispondi solo con una delle opzioni."""),
+            ("human", f"Descrizione: {fattura.descrizione}\nPrestatore: {fattura.prestatore}\nCommittente: {fattura.committente}")
+        ])
+
+        try:
+            response = (prompt | self.llm).invoke({})
+            trans_type = response.content.strip()
+            if trans_type in self.transaction_templates:
+                return trans_type
+        except Exception as e:
+            logger.error(f"Error determining transaction type via AI: {e}")
+        return "ALTRO/GENERICO"
+
+    def _build_transaction_prompt(self, transaction_type: str, include_invoice_number: bool) -> ChatPromptTemplate:
+        examples = self.transaction_templates.get(transaction_type, self.transaction_templates["ALTRO/GENERICO"])
+        dett = "\n".join(f"- {ex}" for ex in examples["dettagli"])
+        caus = "\n".join(f"- {ex}" for ex in examples["causali"])
+
+        invoice_instruction = "- Includi il numero fattura nel dettaglio e/o causale" if include_invoice_number else "- NON includere il numero fattura - usa solo descrizioni generiche del servizio"
+
+        system_msg = (
+            f"Genera una transazione bancaria italiana realistica.\n"
+            f"TIPOLOGIA: {transaction_type}\n"
+            f"Esempi di dettaglio:\n{dett}\n"
+            f"Esempi di causale:\n{caus}\n"
+            "IMPORTANTE:\n"
+            "- Il dettaglio deve essere tipico dei bonifici italiani\n"
+            "- La causale deve essere concisa e professionale\n"
+            "- La controparte può essere uguale o leggermente diversa dal beneficiario\n"
+            "- Usa terminologia bancaria italiana standard\n"
+            f"{invoice_instruction}"
+        )
+
+        return ChatPromptTemplate.from_messages([
+            ("system", system_msg),
+            ("human", "Attributi transazione:\n{attributi_transazione}")
+        ])
     
     def generate_invoice_data(self, company_id: str, data_emissione: str, settore: str, prestatore: str, 
                              importo: float, tipo_servizio: str) -> Tuple[str, str, str]:
@@ -174,52 +243,10 @@ class AITextGenerator:
                                 invoice_number_probability: float = 0.1) -> Tuple[str, str, str, bool]:
         """Generate realistic transaction dettaglio, causale and controparte"""
         include_invoice_number = random.random() < invoice_number_probability
-    
-        # Determine the prompt content based on whether to include the invoice number
-        invoice_number_instruction = ""
-        if include_invoice_number:
-            invoice_number_instruction = "- Includi il numero fattura nel dettaglio e/o causale"
-        else:
-            invoice_number_instruction = "- NON includere il numero fattura - usa solo descrizioni generiche del servizio"
-    
-        prompt_template = ChatPromptTemplate.from_messages([
-            ("system", f"""Genera una transazione bancaria italiana realistica.
-    
-            IMPORTANTE:
-            - Il dettaglio deve essere tipico dei bonifici italiani: qui deve comparire anche la tipologia di pagamento che dev'essere del tipo bonifico SEPA, Deleghe F24, pagamento ADUE, Sepa Direct Debit (SDD) BON.UE, ACCR BEU, etc. coerentemente con la tipologia di fattura
-            - La causale deve essere concisa e professionale e può dipendere dalla tipologia di pagamento. Di seguito alcuni esempio:
-                Bonifici SEPA:
-                    Bonifico SEPA – Fattura 2025/117 – Fornitura software SaaS – Cliente: Rossi S.r.l. – ID Ord. A456
-                    Acconto contratto fornitura servizi IT
-                    Saldo fatturazione trimestre Q1/2024
-                Deleghe F24:
-                    Delega F24 – Cod. tributo 4034 – Rata acconto IVA 2025 – Agenzia Entrate Roma 3 – Mese rif. 07/2025
-                    Versamento IRPEF periodo gennaio 2024
-                    IVA mensile marzo 2024 - cod. tributo 6001
-                    Acconto IRES 2024 - prima rata
-                    Pagamento contributi INPS dipendenti febbraio 2024
-                pagamento ADUE:
-                    ADUE – Verso MEF – Diritti di segreteria universitaria – Matricola T005678 – A.A. 2024/25 – Scad. 31/07/2025
-                    Pagamento TARI 2024 - prima rata
-                    Canone occupazione suolo pubblico 2024
-                    Multa violazione CDS verbale n. 123456
-                SEPA Direct Debit (SDD) BON.UE:
-                    Addebito utenza telefonica marzo 2024
-                    Canone assicurazione auto polizza n. 987654
-                    SDD CORE – Rif. Mandato IT32XYZ000123 – Canone mensile Cloud Hosting – Addebito BON.UE – Fornitore: NetService S.p.A.
-                ACCR BEU (Accredito Beneficiario Europeo):
-                    Stipendio marzo 2024 dipendente IT001
-                    Rimborso note spese trasferta Germania
-                    Pagamento consulenza progetto EU2024
-                    ACCR BEU – Rimborso quota assicurativa polizza INAIL – Periodo 07/2025 – Posizione 0123456/7 – Addebito su c/c
-            - La controparte può essere uguale o leggermente diversa dal beneficiario
-            - Usa terminologia bancaria italiana standard
-            {invoice_number_instruction}
-            """),
-            ("human", "Attributi transazione:\n{attributi_transazione}")
-        ])
-    
-        # Prepare transaction attributes based on whether to include invoice number
+
+        transaction_type = self._determine_transaction_type(fattura)
+        prompt_template = self._build_transaction_prompt(transaction_type, include_invoice_number)
+
         if include_invoice_number:
             attributi_transazione = f"""
             BENEFICIARIO: {fattura.prestatore}
@@ -234,9 +261,9 @@ class AITextGenerator:
             DESCRIZIONE_FATTURA: {fattura.descrizione[:100]}...
             TIPO_SERVIZIO: {getattr(fattura, 'tipo_servizio', 'Servizio professionale')}
             """
-    
+
         chain = prompt_template | self.llm_trans
-    
+
         try:
             response: Transazione = chain.invoke({"attributi_transazione": attributi_transazione})
             return response.dettaglio, response.causale, response.controparte, include_invoice_number

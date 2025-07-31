@@ -502,10 +502,10 @@ class SyntheticDataGenerator:
             invoice_number_probability = 0.1
         
         # Generate transaction details using AI
-        dettaglio, causale, controparte, has_invoice_ref = self.ai_generator.generate_transaction_data(
+        dettaglio, causale, controparte, has_invoice_ref, is_fallback = self.ai_generator.generate_transaction_data(
             fattura, importo, invoice_number_probability
         )
-        
+
         transazione = Transazione(
             id=str(uuid.uuid4()),
             data=data_pagamento,
@@ -514,9 +514,10 @@ class SyntheticDataGenerator:
             tipologia_movimento="pagamento",
             controparte=controparte,
             causale=causale,
-            invoice_number=1 if has_invoice_ref else 0
+            invoice_number=1 if has_invoice_ref else 0,
+            is_fallback=is_fallback # Add this line
         )
-        
+
         return transazione
     
     def generate_scenario_1_1_perfect(self, n_pairs: int) -> Tuple[List[Fattura], List[Transazione], List[GroundTruth]]:

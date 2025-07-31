@@ -187,8 +187,12 @@ class AITextGenerator:
 
     def _build_transaction_prompt(self, transaction_type: str, include_invoice_number: bool) -> ChatPromptTemplate:
         examples = self.transaction_templates.get(transaction_type, self.transaction_templates["ALTRO/GENERICO"])
-        dett = "\n".join(f"- {ex}" for ex in examples["dettagli"])
-        caus = "\n".join(f"- {ex}" for ex in examples["causali"])
+        def _escape(text: str) -> str:
+            """Escape curly braces so prompt templates don't expect variables."""
+            return text.replace("{", "{{").replace("}", "}}")
+
+        dett = "\n".join(f"- {_escape(ex)}" for ex in examples["dettagli"])
+        caus = "\n".join(f"- {_escape(ex)}" for ex in examples["causali"])
 
         invoice_instruction = "- Includi il numero fattura nel dettaglio e/o causale" if include_invoice_number else "- NON includere il numero fattura - usa solo descrizioni generiche del servizio"
 

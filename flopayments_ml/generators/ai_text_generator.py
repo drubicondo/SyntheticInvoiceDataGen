@@ -6,8 +6,7 @@ from openai import RateLimitError
 from langchain_openai import AzureChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from datetime import datetime
-
-from ..core.data_models import Fattura
+from ..core.data_models import Fattura, Transazione
 from pydantic import BaseModel, Field
 from ..core.exceptions import GenerationError
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
@@ -23,7 +22,7 @@ class AIInvoiceOutput(BaseModel):
     committente: str = Field(description="Committente della fattura")
     numero_fattura: str = Field(description="Numero identificativo della fattura")
 
-
+      
 class AITransactionOutput(BaseModel):
     """Minimal transaction model returned by the language model."""
 
@@ -31,6 +30,7 @@ class AITransactionOutput(BaseModel):
     causale: str = Field(description="Causale del pagamento")
     controparte: str = Field(description="Controparte del pagamento")
 
+      
 class AITextGenerator:
     """Handles AI-powered text generation for invoices and transactions"""
     
@@ -162,6 +162,17 @@ class AITextGenerator:
         """Invoke an LLM chain with retry on rate limit errors."""
         return chain.invoke(inputs)
 
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=20),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type(RateLimitError),
+        reraise=True,
+    )
+    def _invoke_with_retry(self, chain, inputs):
+        """Invoke an LLM chain with retry on rate limit errors."""
+        return chain.invoke(inputs)
+
     def _heuristic_transaction_type(self, fattura: Fattura) -> Optional[str]:
         """Try to infer the transaction type from invoice information using simple heuristics."""
         text = f"{fattura.descrizione} {fattura.prestatore} {fattura.committente}".lower()
@@ -276,6 +287,7 @@ class AITextGenerator:
             logger.error(f"Error generating invoice data: {e}")
             return self._get_fallback_invoice_data(tipo_servizio, data_emissione)
     
+
     def generate_transaction_data(
         self, fattura: Fattura, importo: float, invoice_number_probability: float = 0.1
     ) -> Tuple[str, str, str, bool, bool, Optional[str]]:

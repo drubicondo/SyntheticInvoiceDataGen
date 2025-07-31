@@ -2,16 +2,26 @@ import os
 import random
 import logging
 from typing import Tuple, Optional
+from openai import RateLimitError
 from langchain_openai import AzureChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from datetime import datetime
 
 from ..core.data_models import Fattura, Transazione
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from ..core.exceptions import GenerationError
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
+
 logger = logging.getLogger(__name__)
+
+
+class AIInvoiceOutput(BaseModel):
+    """Simplified invoice model expected from the language model."""
+
+    descrizione: str = Field(description="Descrizione della fattura")
+    committente: str = Field(description="Committente della fattura")
+    numero_fattura: str = Field(description="Numero identificativo della fattura")
 
 class AITextGenerator:
     """Handles AI-powered text generation for invoices and transactions"""
@@ -127,8 +137,20 @@ class AITextGenerator:
             openai_api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             temperature=temperature
         )
-        self.llm_invoice = self.llm.with_structured_output(Fattura)
+        # The language model only needs to output a subset of invoice fields
+        # used for text generation, so we parse responses with AIInvoiceOutput
+        self.llm_invoice = self.llm.with_structured_output(AIInvoiceOutput)
         self.llm_trans = self.llm.with_structured_output(Transazione)
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=20),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type(RateLimitError),
+        reraise=True,
+    )
+    def _invoke_with_retry(self, chain, inputs):
+        """Invoke an LLM chain with retry on rate limit errors."""
+        return chain.invoke(inputs)
 
     def _heuristic_transaction_type(self, fattura: Fattura) -> Optional[str]:
         """Try to infer the transaction type from invoice information using simple heuristics."""
@@ -176,8 +198,12 @@ class AITextGenerator:
 
     def _build_transaction_prompt(self, transaction_type: str, include_invoice_number: bool) -> ChatPromptTemplate:
         examples = self.transaction_templates.get(transaction_type, self.transaction_templates["ALTRO/GENERICO"])
-        dett = "\n".join(f"- {ex}" for ex in examples["dettagli"])
-        caus = "\n".join(f"- {ex}" for ex in examples["causali"])
+        def _escape(text: str) -> str:
+            """Escape curly braces so prompt templates don't expect variables."""
+            return text.replace("{", "{{").replace("}", "}}")
+
+        dett = "\n".join(f"- {_escape(ex)}" for ex in examples["dettagli"])
+        caus = "\n".join(f"- {_escape(ex)}" for ex in examples["causali"])
 
         invoice_instruction = "- Includi il numero fattura nel dettaglio e/o causale" if include_invoice_number else "- NON includere il numero fattura - usa solo descrizioni generiche del servizio"
 
@@ -241,7 +267,7 @@ class AITextGenerator:
             return self._get_fallback_invoice_data(tipo_servizio, data_emissione)
     
     def generate_transaction_data(self, fattura: Fattura, importo: float,
-                                invoice_number_probability: float = 0.1) -> Tuple[str, str, str, bool, bool]:
+                                invoice_number_probability: float = 0.1) -> Tuple[str, str, str, bool, bool, Optional[str]]:
         """Generate realistic transaction dettaglio, causale and controparte"""
         include_invoice_number = random.random() < invoice_number_probability
 
@@ -266,11 +292,20 @@ class AITextGenerator:
         chain = prompt_template | self.llm_trans
 
         try:
-            response: Transazione = chain.invoke({"attributi_transazione": attributi_transazione})
-            return response.dettaglio, response.causale, response.controparte, include_invoice_number, False
+            response: Transazione = self._invoke_with_retry(
+                chain, {"attributi_transazione": attributi_transazione}
+            )
+            return (
+                response.dettaglio,
+                response.causale,
+                response.controparte,
+                include_invoice_number,
+                False,
+                None,
+            )
         except Exception as e:
             logger.error(f"Error generating transaction data: {e}")
-            return self._get_fallback_transaction_data(fattura, include_invoice_number)
+            return self._get_fallback_transaction_data(fattura, include_invoice_number, str(e))
     
     def _get_fallback_invoice_data(self, tipo_servizio: str, data_emissione) -> Tuple[str, str, str]:
         """Generate fallback invoice data when AI generation fails"""
@@ -296,7 +331,12 @@ class AITextGenerator:
         fallback_numero = f"FT{data_emissione_dt.year}/{random.randint(1000, 9999)}"
         return fallback_desc, "BETA SOLUTIONS SRL", fallback_numero
     
-    def _get_fallback_transaction_data(self, fattura: Fattura, include_invoice_number: bool) -> Tuple[str, str, str, bool, bool]:
+    def _get_fallback_transaction_data(
+        self,
+        fattura: Fattura,
+        include_invoice_number: bool,
+        error: str,
+    ) -> Tuple[str, str, str, bool, bool, str]:
         """Generate fallback transaction data when AI generation fails"""
         if include_invoice_number:
             fallback_dettaglio = f"BONIFICO SEPA - Pagamento fattura n. {fattura.numero_fattura}"
@@ -307,7 +347,14 @@ class AITextGenerator:
             fallback_causale = f"Pagamento {service_type}"
 
         fallback_controparte = fattura.prestatore
-        return fallback_dettaglio, fallback_causale, fallback_controparte, include_invoice_number, True
+        return (
+            fallback_dettaglio,
+            fallback_causale,
+            fallback_controparte,
+            include_invoice_number,
+            True,
+            error,
+        )
 
     def generate_invoice_data_batch(self, invoices: list[dict]) -> list[Tuple[str, str, str]]:
         """Generate invoice texts for a batch of invoices."""
@@ -352,11 +399,16 @@ class AITextGenerator:
             logger.error(f"Error generating invoice batch: {e}")
             return [self._get_fallback_invoice_data(i['tipo_servizio'], i['data_emissione']) for i in invoices]
 
-    @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(5), retry=retry_if_exception_type(Exception))
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        stop=stop_after_attempt(5),
+        retry=retry_if_exception_type(RateLimitError),
+        reraise=True,
+    )
     def _generate_batch_with_retry(self, chain, inputs):
         return chain.batch(inputs)
 
-    def generate_transaction_data_batch(self, transactions: list[dict]) -> list[Tuple[str, str, str, bool, bool]]:
+    def generate_transaction_data_batch(self, transactions: list[dict]) -> list[Tuple[str, str, str, bool, bool, Optional[str]]]:
         """Generate transaction texts for a batch of payments."""
         prompt_with = ChatPromptTemplate.from_messages([
             ("system", """Genera una transazione bancaria italiana realistica.
@@ -410,14 +462,30 @@ class AITextGenerator:
             if inputs_with:
                 res_with = self._generate_batch_with_retry(chain_with, inputs_with)
                 for i, r in zip(idx_with, res_with):
-                    results[i] = (r.dettaglio, r.causale, r.controparte, True, False)
+                    results[i] = (
+                        r.dettaglio,
+                        r.causale,
+                        r.controparte,
+                        True,
+                        False,
+                        None,
+                    )
             if inputs_without:
                 res_without = self._generate_batch_with_retry(chain_without, inputs_without)
                 for i, r in zip(idx_without, res_without):
-                    results[i] = (r.dettaglio, r.causale, r.controparte, False, False)
+                    results[i] = (
+                        r.dettaglio,
+                        r.causale,
+                        r.controparte,
+                        False,
+                        False,
+                        None,
+                    )
         except Exception as e:
             logger.error(f"Error generating transaction batch after retries: {e}")
             for i, t in enumerate(transactions):
-                results[i] = self._get_fallback_transaction_data(t['fattura'], t['include_invoice_number'])
+                results[i] = self._get_fallback_transaction_data(
+                    t['fattura'], t['include_invoice_number'], str(e)
+                )
 
         return results

@@ -148,5 +148,13 @@ class Transazione(BaseModel):
         ],
         description = "causale della transazione"
     )
-    invoice_number: bool #whether or not the descrizione/causal contains invoice number
+    invoice_number: bool  # whether or not the descrizione/causale contains invoice number
+    is_fallback: bool = Field(
+        default=False,
+        description="Indicates that the record was generated using fallback logic",
+    )
+    error: Optional[str] = Field(
+        default=None,
+        description="Error message returned when falling back to synthetic data",
+    )
     

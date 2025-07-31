@@ -2,13 +2,13 @@ import os
 import random
 import logging
 from typing import Tuple, Optional
-from openai import RateLimitError
+from openai import RateLimitError, OpenAIError
 from langchain_openai import AzureChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from datetime import datetime
 from ..core.data_models import Fattura, Transazione
 from pydantic import BaseModel, Field
-from ..core.exceptions import GenerationError
+from ..core.exceptions import GenerationError, ContentFilterError
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 
@@ -155,23 +155,18 @@ class AITextGenerator:
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=20),
         stop=stop_after_attempt(3),
-        retry=retry_if_exception_type(RateLimitError),
+        retry=retry_if_exception_type((RateLimitError, ContentFilterError)),
         reraise=True,
     )
     def _invoke_with_retry(self, chain, inputs):
-        """Invoke an LLM chain with retry on rate limit errors."""
-        return chain.invoke(inputs)
-
-
-    @retry(
-        wait=wait_exponential(multiplier=1, min=1, max=20),
-        stop=stop_after_attempt(3),
-        retry=retry_if_exception_type(RateLimitError),
-        reraise=True,
-    )
-    def _invoke_with_retry(self, chain, inputs):
-        """Invoke an LLM chain with retry on rate limit errors."""
-        return chain.invoke(inputs)
+        """Invoke an LLM chain with retry on rate limit or content filter errors."""
+        try:
+            return chain.invoke(inputs)
+        except OpenAIError as e:
+            if "content filter" in str(e).lower():
+                logger.warning(f"OpenAI content filter triggered: {e}")
+                raise ContentFilterError(str(e))
+            raise
 
     def _heuristic_transaction_type(self, fattura: Fattura) -> Optional[str]:
         """Try to infer the transaction type from invoice information using simple heuristics."""
@@ -425,11 +420,17 @@ class AITextGenerator:
     @retry(
         wait=wait_exponential(multiplier=1, min=4, max=10),
         stop=stop_after_attempt(5),
-        retry=retry_if_exception_type(RateLimitError),
+        retry=retry_if_exception_type((RateLimitError, ContentFilterError)),
         reraise=True,
     )
     def _generate_batch_with_retry(self, chain, inputs):
-        return chain.batch(inputs)
+        try:
+            return chain.batch(inputs)
+        except OpenAIError as e:
+            if "content filter" in str(e).lower():
+                logger.warning(f"OpenAI content filter triggered: {e}")
+                raise ContentFilterError(str(e))
+            raise
 
     def generate_transaction_data_batch(self, transactions: list[dict]) -> list[Tuple[str, str, str, bool, bool, Optional[str]]]:
         """Generate transaction texts for a batch of payments."""

@@ -9,3 +9,8 @@ class ValidationError(Exception):
 class GenerationError(Exception):
     """Raised when data generation fails"""
     pass
+
+
+class ContentFilterError(Exception):
+    """Raised when a response is blocked by the OpenAI content filter"""
+    pass

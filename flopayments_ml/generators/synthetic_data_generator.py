@@ -358,11 +358,26 @@ class SyntheticDataGenerator:
 
         return fatture
 
-    def _generate_payments_batch(self, fatture: list[Fattura], 
-                                 amount_patterns: list[AmountPattern], 
+    def _generate_payments_batch(self, fatture: list[Fattura],
+                                 companies: list[Dict],
+                                 amount_patterns: list[AmountPattern],
                                  timing_patterns: list[TimingPattern],
                                  quality_levels: list[QualityLevel]) -> list[Transazione]:
-        """Generate payments for a batch of invoices."""
+        """Generate payments for a batch of invoices.
+
+        Parameters
+        ----------
+        fatture : list[Fattura]
+            Invoices for which the payments will be generated.
+        companies : list[Dict]
+            Company info corresponding to each invoice.
+        amount_patterns : list[AmountPattern]
+            Pattern describing how the payment amount should be generated.
+        timing_patterns : list[TimingPattern]
+            Pattern describing the timing of the payment.
+        quality_levels : list[QualityLevel]
+            Noise level to apply when generating the payment details.
+        """
         prepared = []
         ai_inputs = []
 

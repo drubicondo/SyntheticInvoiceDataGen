@@ -8,11 +8,20 @@ from langchain.prompts import ChatPromptTemplate
 from datetime import datetime
 
 from ..core.data_models import Fattura, Transazione
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from ..core.exceptions import GenerationError
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
+
 logger = logging.getLogger(__name__)
+
+
+class AIInvoiceOutput(BaseModel):
+    """Simplified invoice model expected from the language model."""
+
+    descrizione: str = Field(description="Descrizione della fattura")
+    committente: str = Field(description="Committente della fattura")
+    numero_fattura: str = Field(description="Numero identificativo della fattura")
 
 class AITextGenerator:
     """Handles AI-powered text generation for invoices and transactions"""
@@ -128,7 +137,9 @@ class AITextGenerator:
             openai_api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             temperature=temperature
         )
-        self.llm_invoice = self.llm.with_structured_output(Fattura)
+        # The language model only needs to output a subset of invoice fields
+        # used for text generation, so we parse responses with AIInvoiceOutput
+        self.llm_invoice = self.llm.with_structured_output(AIInvoiceOutput)
         self.llm_trans = self.llm.with_structured_output(Transazione)
 
     @retry(

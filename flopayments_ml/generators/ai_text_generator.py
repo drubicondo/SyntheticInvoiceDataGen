@@ -6,7 +6,6 @@ from openai import RateLimitError
 from langchain_openai import AzureChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from datetime import datetime
-
 from ..core.data_models import Fattura, Transazione
 from pydantic import BaseModel, Field
 from ..core.exceptions import GenerationError
@@ -23,6 +22,15 @@ class AIInvoiceOutput(BaseModel):
     committente: str = Field(description="Committente della fattura")
     numero_fattura: str = Field(description="Numero identificativo della fattura")
 
+      
+class AITransactionOutput(BaseModel):
+    """Minimal transaction model returned by the language model."""
+
+    dettaglio: str = Field(description="Dettaglio del pagamento")
+    causale: str = Field(description="Causale del pagamento")
+    controparte: str = Field(description="Controparte del pagamento")
+
+      
 class AITextGenerator:
     """Handles AI-powered text generation for invoices and transactions"""
     
@@ -140,7 +148,20 @@ class AITextGenerator:
         # The language model only needs to output a subset of invoice fields
         # used for text generation, so we parse responses with AIInvoiceOutput
         self.llm_invoice = self.llm.with_structured_output(AIInvoiceOutput)
-        self.llm_trans = self.llm.with_structured_output(Transazione)
+        # Transactions only require a subset of fields, so parse with
+        # AITransactionOutput to avoid validation of UUIDs or dates
+        self.llm_trans = self.llm.with_structured_output(AITransactionOutput)
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=20),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type(RateLimitError),
+        reraise=True,
+    )
+    def _invoke_with_retry(self, chain, inputs):
+        """Invoke an LLM chain with retry on rate limit errors."""
+        return chain.invoke(inputs)
+
 
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=20),
@@ -266,8 +287,10 @@ class AITextGenerator:
             logger.error(f"Error generating invoice data: {e}")
             return self._get_fallback_invoice_data(tipo_servizio, data_emissione)
     
-    def generate_transaction_data(self, fattura: Fattura, importo: float,
-                                invoice_number_probability: float = 0.1) -> Tuple[str, str, str, bool, bool, Optional[str]]:
+
+    def generate_transaction_data(
+        self, fattura: Fattura, importo: float, invoice_number_probability: float = 0.1
+    ) -> Tuple[str, str, str, bool, bool, Optional[str]]:
         """Generate realistic transaction dettaglio, causale and controparte"""
         include_invoice_number = random.random() < invoice_number_probability
 
@@ -292,7 +315,7 @@ class AITextGenerator:
         chain = prompt_template | self.llm_trans
 
         try:
-            response: Transazione = self._invoke_with_retry(
+            response: AITransactionOutput = self._invoke_with_retry(
                 chain, {"attributi_transazione": attributi_transazione}
             )
             return (

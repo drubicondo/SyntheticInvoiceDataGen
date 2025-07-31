@@ -435,7 +435,7 @@ class SyntheticDataGenerator:
         ai_results = self.ai_generator.generate_transaction_data_batch(ai_inputs)
 
         transazioni = []
-        for prep, (dettaglio, causale, controparte, has_invoice_ref, is_fallback) in zip(prepared, ai_results):
+        for prep, (dettaglio, causale, controparte, has_invoice_ref, is_fallback, error) in zip(prepared, ai_results):
             transazione = Transazione(
                 id=str(uuid.uuid4()),
                 data=prep['data_pagamento'],
@@ -445,7 +445,8 @@ class SyntheticDataGenerator:
                 controparte=controparte,
                 causale=causale,
                 invoice_number=1 if has_invoice_ref else 0,
-                is_fallback=is_fallback # Add this line
+                is_fallback=is_fallback,
+                error=error,
             )
             transazioni.append(transazione)
 
@@ -502,7 +503,7 @@ class SyntheticDataGenerator:
             invoice_number_probability = 0.1
         
         # Generate transaction details using AI
-        dettaglio, causale, controparte, has_invoice_ref, is_fallback = self.ai_generator.generate_transaction_data(
+        dettaglio, causale, controparte, has_invoice_ref, is_fallback, error = self.ai_generator.generate_transaction_data(
             fattura, importo, invoice_number_probability
         )
 
@@ -515,7 +516,8 @@ class SyntheticDataGenerator:
             controparte=controparte,
             causale=causale,
             invoice_number=1 if has_invoice_ref else 0,
-            is_fallback=is_fallback # Add this line
+            is_fallback=is_fallback,
+            error=error,
         )
 
         return transazione

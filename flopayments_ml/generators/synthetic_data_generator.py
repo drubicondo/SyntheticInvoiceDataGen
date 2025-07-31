@@ -358,7 +358,10 @@ class SyntheticDataGenerator:
 
         return fatture
 
-    def _generate_payments_batch(self, fatture: List[Fattura], companies: List[Dict], amount_patterns: List[AmountPattern], timing_patterns: List[TimingPattern], quality_levels: List[QualityLevel]) -> List[Transazione]:
+    def _generate_payments_batch(self, fatture: list[Fattura], 
+                                 amount_patterns: list[AmountPattern], 
+                                 timing_patterns: list[TimingPattern],
+                                 quality_levels: list[QualityLevel]) -> list[Transazione]:
         """Generate payments for a batch of invoices."""
         prepared = []
         ai_inputs = []
@@ -417,7 +420,7 @@ class SyntheticDataGenerator:
         ai_results = self.ai_generator.generate_transaction_data_batch(ai_inputs)
 
         transazioni = []
-        for prep, (dettaglio, causale, controparte, has_invoice_ref) in zip(prepared, ai_results):
+        for prep, (dettaglio, causale, controparte, has_invoice_ref, is_fallback) in zip(prepared, ai_results):
             transazione = Transazione(
                 id=str(uuid.uuid4()),
                 data=prep['data_pagamento'],
@@ -426,7 +429,8 @@ class SyntheticDataGenerator:
                 tipologia_movimento="pagamento",
                 controparte=controparte,
                 causale=causale,
-                invoice_number=1 if has_invoice_ref else 0
+                invoice_number=1 if has_invoice_ref else 0,
+                is_fallback=is_fallback # Add this line
             )
             transazioni.append(transazione)
 
